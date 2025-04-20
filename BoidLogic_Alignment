@@ -1,0 +1,110 @@
+// This function applies a force in the direction of the average heading of flockmates
+// That force weakens as distance between flock-mates incrases.
+
+// We're returning a force 
+outAlignmentForce = float3(0.0, 0.0, 0.0);
+
+// The same as the ones before us!
+#if GPU_SIMULATION
+
+// Particle's position relative to the grid
+float3 unitPos = float3(0.0, 0.0, 0.0);
+inNeighborGrid3D.SimulationToUnit(inPosition, inWorldToUnitMatrix, unitPos);
+
+// The cell index the particle is located in 
+int3 CellIndex = int3(0, 0, 0);
+inNeighborGrid3D.UnitToIndex(unitPos, CellIndex.x, CellIndex.y, CellIndex.z);
+
+// The total number of cells
+int3 NumCells = int3(0, 0, 0);
+inNeighborGrid3D.GetNumCells(NumCells.x, NumCells.y, NumCells.z);
+
+// Set maximum neighbors per cell
+int MaxNeighborsCount = 0;
+inNeighborGrid3D.MaxNeighborsPerCell(MaxNeighborsCount);
+
+// this is to maintain the sum of particles of positions
+float3 SumPositions = float3(0.0, 0.0, 0.0);
+
+// total # of neighbors to our particle
+int NeighborCount = 0;
+
+// We will need to sum up the velocities of neighbors
+float3 SumVelocities = float3(0.0, 0.0, 0.0);
+
+// our current range of a particle is a total of 27 cells,
+// think of this as a 3x3x3 section, with the particle's currently inhabited cell as the center.
+// Loop through each neighbor cell
+for (int x = -1; x <= 1; x++)
+{
+    for (int y = -1; y <= 1; y++)
+    {
+        for (int z = -1; z <= 1; z++)
+        {
+            // get the cell index that we're currently checking the population for
+            const int3 CellIndexToCheck = CellIndex + int3(x, y, z);
+
+            // safety check!
+            // makes sure we're not checking cells that don't exist at the corners of the cube
+            if (CellIndexToCheck.x >= 0 && CellIndexToCheck.x < NumCells.x &&
+                CellIndexToCheck.y >= 0 && CellIndexToCheck.y < NumCells.y &&
+                CellIndexToCheck.z >= 0 && CellIndexToCheck.z < NumCells.z)
+            {
+                for (int i = 0; i < MaxNeighborsCount; i++)
+                {
+                    // Here, we change the grid's indices to a linear form
+                    // The way this is done is by conversion to a linear buffer in our GPU. 
+                    // We do this because this is what the functions take... IDK why, it sucks.
+                    int NeighborLinearIndex = 0;
+                    inNeighborGrid3D.NeighborGridIndexToLinear(CellIndexToCheck.x, CellIndexToCheck.y, CellIndexToCheck.z, i, NeighborLinearIndex);
+
+                    // This is the particle's index
+                    int NeighborIndex = 0;
+                    inNeighborGrid3D.GetParticleNeighbor(NeighborLinearIndex, NeighborIndex);
+
+                    // here I'm coding an early exit in the case that we're out of bounds or the neighbor was poorly selected
+                    // if the neighborIndex is -1, or if the particle we're analyzing is the one that we ARE, continue
+                    if (NeighborIndex == -1 || NeighborIndex == inExecutionIndex) continue;
+
+                        /*
+                        In other instances, I care about the Neighbor Position, but not here! I care about velocity
+                            float3 NeighborPosition = float3(0.0, 0.0, 0.0);
+                            bool bNeighborPositionValid = false; // Tells us if query was successful
+                        So, we just comment it out.
+                        */
+                    
+                    // This will hold all of the neighbor's velocities
+                    float3 NeighborVelocity = float3(0.0, 0.0, 0.0);
+
+                    // A boolean to check if the velocity is actually valid in the first place
+                    bool bNeighborVelocityValid = false;
+
+                    // The three arguments here are...
+                        // NeighborIndex, which is the particle's index
+                        // bNeighborVelocityValid, which is the output boolean that tells us if the query was successful
+                        // and NeighborPosition, an out parameter to store our current position
+                    inAttributeReader.GetVectorByIndex<Attribute="Value">(NeighborIndex, bNeighborVelocityValid, NeighborVelocity);
+                    
+                    // If the attributeReader is UNSUCCESSFUL in getting the position, exit now, before performing this check
+                    if (!bNeighborVelocityValid) continue;
+
+                    // Find the total # of velocities that are present within the neighbor range
+                    SumVelocities += NeighborVelocity;
+                    NeighborCount++;
+                }
+            }
+        }
+    }
+}
+
+// So long as there are neighbors around
+if (NeighborCount > 0)
+{
+
+    // Find the average velocity of the neighbors, and the direction that they're going in
+    // I.E... their 'heading'
+    float3 AvgVelocity = SumVelocities / NeighborCount;
+    outAlignmentForce = normalize(AvgVelocity); 
+}
+
+#endif
